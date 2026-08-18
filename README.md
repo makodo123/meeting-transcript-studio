@@ -1,5 +1,7 @@
 # 會議錄音逐字稿工具
 
+🔗 **線上使用**：https://makodo123.github.io/meeting-transcript-studio/
+
 把會議錄音轉成帶時間戳記的繁體中文逐字稿，並可匯出成 Word / PDF 會議紀錄。**前端網頁部署在 GitHub Pages**，只搭配一個極簡的 Cloudflare Worker 中繼站（因為 OpenAI API 不開放瀏覽器直接呼叫），音檔本身不會經過任何自建後端。
 
 ## 架構
