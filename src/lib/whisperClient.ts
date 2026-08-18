@@ -1,6 +1,7 @@
-import type { TranscriptSegment } from "../types";
+import type { TranscribeOptions, TranscriptSegment } from "../types";
 import type { AudioChunk } from "./audioChunker";
 import { toTraditionalTaiwan } from "./opencc";
+import { NonRetryableError, withRetry } from "./retry";
 
 interface WhisperVerboseSegment {
   start: number;
@@ -50,7 +51,15 @@ async function transcribeChunk(blob: Blob, apiKey: string, relayUrl: string): Pr
       // ignore parse failure, fall back to statusText
     }
     if (res.status === 401) {
-      throw new Error("API 金鑰無效，請確認金鑰是否正確。");
+      throw new NonRetryableError("API 金鑰無效，請確認金鑰是否正確。");
+    }
+    if (res.status === 429) {
+      // 額度/頻率限制通常是暫時的，值得重試
+      throw new Error(`Whisper API 額度限制（429）：${detail}`);
+    }
+    if (res.status >= 400 && res.status < 500) {
+      // 其餘 4xx 是請求本身有問題，重試也不會成功
+      throw new NonRetryableError(`Whisper API 請求有問題（${res.status}）：${detail}`);
     }
     throw new Error(`Whisper API 呼叫失敗（${res.status}）：${detail}`);
   }
@@ -65,14 +74,18 @@ export async function transcribeChunks(
   apiKey: string,
   relayUrl: string,
   onProgress: (done: number, total: number, segments: TranscriptSegment[]) => void,
+  options: TranscribeOptions = {},
 ): Promise<TranscriptSegment[]> {
-  const result: TranscriptSegment[] = [];
+  const startIndex = options.startIndex ?? 0;
+  const result: TranscriptSegment[] = [...(options.initialSegments ?? [])];
   let repeatText = "";
   let repeatCount = 0;
 
-  for (let i = 0; i < chunks.length; i++) {
+  for (let i = startIndex; i < chunks.length; i++) {
     const { blob, offsetSeconds } = chunks[i];
-    const segments = await transcribeChunk(blob, apiKey, relayUrl);
+    const segments = await withRetry(() => transcribeChunk(blob, apiKey, relayUrl), {
+      onRetry: (attempt, maxAttempts) => options.onRetry?.(i + 1, chunks.length, attempt, maxAttempts),
+    });
     for (const seg of segments) {
       if (isLikelyHallucinatedSilence(seg)) continue;
 

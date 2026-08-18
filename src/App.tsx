@@ -6,6 +6,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { TranscriptView } from "./components/TranscriptView";
 import { decodeAndChunkAudio } from "./lib/audioChunker";
 import { transcribeChunksGemini } from "./lib/geminiClient";
+import { clearProgress, loadProgress, saveProgress } from "./lib/resumeStore";
 import { transcribeChunks } from "./lib/whisperClient";
 import type { Engine, JobStatus, MeetingMeta, TranscriptSegment } from "./types";
 
@@ -23,6 +24,7 @@ function App() {
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [meta, setMeta] = useState<MeetingMeta>({ title: "", date: "", participants: "" });
 
   useEffect(() => {
@@ -74,29 +76,56 @@ function App() {
     }
 
     setStatus("processing");
-    setProgress({ done: 0, total: 0 });
-    setSegments([]);
     setError("");
+    setNotice("");
 
     try {
       const chunks = await decodeAndChunkAudio(file);
-      setProgress({ done: 0, total: chunks.length });
+
+      // 斷點續傳：如果同一個檔案（檔名/大小/修改時間都相同）之前用同一個引擎轉錄到一半，
+      // 就從上次的進度接著做，不用整份重來。
+      const saved = loadProgress(file, engine);
+      const canResume = !!saved && saved.totalChunks === chunks.length && saved.doneChunks < chunks.length;
+      const startIndex = canResume ? saved!.doneChunks : 0;
+      const initialSegments = canResume ? saved!.segments : [];
+
+      if (canResume) {
+        setNotice(`偵測到上次未完成的進度，從第 ${startIndex + 1}/${chunks.length} 段繼續轉錄`);
+      }
+
+      setSegments(initialSegments);
+      setProgress({ done: startIndex, total: chunks.length });
 
       const onProgress = (done: number, total: number, partial: TranscriptSegment[]) => {
         setProgress({ done, total });
         setSegments(partial);
+        saveProgress(file, engine, { totalChunks: total, doneChunks: done, segments: partial });
+      };
+      const onRetry = (chunkIndex: number, total: number, attempt: number, maxAttempts: number) => {
+        setNotice(`第 ${chunkIndex}/${total} 段連線失敗，重試中（${attempt}/${maxAttempts}）…`);
       };
 
       const result =
         engine === "openai"
-          ? await transcribeChunks(chunks, openaiApiKey, relayUrl, onProgress)
-          : await transcribeChunksGemini(chunks, geminiApiKey, onProgress);
+          ? await transcribeChunks(chunks, openaiApiKey, relayUrl, onProgress, {
+              startIndex,
+              initialSegments,
+              onRetry,
+            })
+          : await transcribeChunksGemini(chunks, geminiApiKey, onProgress, {
+              startIndex,
+              initialSegments,
+              onRetry,
+            });
 
       setSegments(result);
       setStatus("done");
+      setNotice("");
+      clearProgress(file, engine);
     } catch (err) {
       setStatus("error");
       setError(err instanceof Error ? err.message : "發生未知錯誤。");
+      setNotice("目前進度已保留，重新拖上同一個檔案可以接著轉錄，不用從頭開始。");
     }
   };
 
@@ -116,7 +145,7 @@ function App() {
         onGeminiApiKeyChange={handleGeminiApiKeyChange}
       />
       <Dropzone disabled={status === "processing"} onFileSelected={handleFileSelected} />
-      <ProgressPanel status={status} progress={progress} error={error} />
+      <ProgressPanel status={status} progress={progress} error={error} notice={notice} />
       <TranscriptView segments={segments} />
       <ExportPanel segments={segments} meta={meta} onMetaChange={setMeta} />
     </main>

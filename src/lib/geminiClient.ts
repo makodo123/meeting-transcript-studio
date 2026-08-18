@@ -1,6 +1,7 @@
-import type { TranscriptSegment } from "../types";
+import type { TranscribeOptions, TranscriptSegment } from "../types";
 import type { AudioChunk } from "./audioChunker";
 import { toTraditionalTaiwan } from "./opencc";
+import { NonRetryableError, withRetry } from "./retry";
 
 // Google 的 Generative Language API 支援瀏覽器直接呼叫（有開放 CORS），
 // 不像 OpenAI 那樣需要中繼伺服器。
@@ -80,10 +81,16 @@ async function transcribeChunk(blob: Blob, apiKey: string): Promise<TranscriptSe
   const data: GeminiResponse = await res.json().catch(() => ({}) as GeminiResponse);
 
   if (!res.ok) {
-    if (res.status === 400 || res.status === 403) {
-      throw new Error("Gemini API 金鑰無效，請確認金鑰是否正確。");
+    const message = data.error?.message || res.statusText;
+    if (res.status === 429) {
+      // 額度/頻率限制通常是暫時的，值得重試
+      throw new Error(`Gemini API 額度限制（429）：${message}`);
     }
-    throw new Error(`Gemini API 呼叫失敗（${res.status}）：${data.error?.message || res.statusText}`);
+    if (res.status >= 400 && res.status < 500) {
+      // 其餘 4xx（通常是金鑰無效或請求本身有問題）重試也不會成功
+      throw new NonRetryableError(`Gemini API 金鑰或請求有問題（${res.status}）：${message}`);
+    }
+    throw new Error(`Gemini API 呼叫失敗（${res.status}）：${message}`);
   }
 
   const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
@@ -95,11 +102,16 @@ export async function transcribeChunksGemini(
   chunks: AudioChunk[],
   apiKey: string,
   onProgress: (done: number, total: number, segments: TranscriptSegment[]) => void,
+  options: TranscribeOptions = {},
 ): Promise<TranscriptSegment[]> {
-  const result: TranscriptSegment[] = [];
-  for (let i = 0; i < chunks.length; i++) {
+  const startIndex = options.startIndex ?? 0;
+  const result: TranscriptSegment[] = [...(options.initialSegments ?? [])];
+
+  for (let i = startIndex; i < chunks.length; i++) {
     const { blob, offsetSeconds } = chunks[i];
-    const segments = await transcribeChunk(blob, apiKey);
+    const segments = await withRetry(() => transcribeChunk(blob, apiKey), {
+      onRetry: (attempt, maxAttempts) => options.onRetry?.(i + 1, chunks.length, attempt, maxAttempts),
+    });
     for (const seg of segments) {
       result.push({ start: seg.start + offsetSeconds, end: seg.end + offsetSeconds, text: seg.text });
     }

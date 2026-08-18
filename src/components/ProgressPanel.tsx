@@ -4,9 +4,10 @@ interface Props {
   status: JobStatus;
   progress: { done: number; total: number };
   error: string;
+  notice?: string;
 }
 
-export function ProgressPanel({ status, progress, error }: Props) {
+export function ProgressPanel({ status, progress, error, notice }: Props) {
   if (status === "idle") return null;
 
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
@@ -26,6 +27,7 @@ export function ProgressPanel({ status, progress, error }: Props) {
       <div className="progress-bar">
         <div className="progress-fill" style={{ width: `${status === "done" ? 100 : pct}%` }} />
       </div>
+      {notice && <p className="notice">{notice}</p>}
       {status === "error" && error && <p className="error">{error}</p>}
     </section>
   );

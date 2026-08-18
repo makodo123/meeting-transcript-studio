@@ -122,6 +122,12 @@ h1 {
   font-weight: 600;
 }
 
+.notice {
+  color: var(--accent);
+  font-size: 0.9rem;
+  margin-top: 0.5rem;
+}
+
 .transcript {
   max-height: 420px;
   overflow-y: auto;
