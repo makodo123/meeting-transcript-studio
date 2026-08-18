@@ -11,3 +11,5 @@ export interface MeetingMeta {
 }
 
 export type JobStatus = "idle" | "processing" | "done" | "error";
+
+export type Engine = "openai" | "gemini";

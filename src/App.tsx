@@ -5,15 +5,20 @@ import { ProgressPanel } from "./components/ProgressPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TranscriptView } from "./components/TranscriptView";
 import { decodeAndChunkAudio } from "./lib/audioChunker";
+import { transcribeChunksGemini } from "./lib/geminiClient";
 import { transcribeChunks } from "./lib/whisperClient";
-import type { JobStatus, MeetingMeta, TranscriptSegment } from "./types";
+import type { Engine, JobStatus, MeetingMeta, TranscriptSegment } from "./types";
 
-const API_KEY_STORAGE_KEY = "voiceToWord.openaiApiKey";
+const ENGINE_STORAGE_KEY = "voiceToWord.engine";
+const OPENAI_API_KEY_STORAGE_KEY = "voiceToWord.openaiApiKey";
 const RELAY_URL_STORAGE_KEY = "voiceToWord.relayUrl";
+const GEMINI_API_KEY_STORAGE_KEY = "voiceToWord.geminiApiKey";
 
 function App() {
-  const [apiKey, setApiKey] = useState("");
+  const [engine, setEngine] = useState<Engine>("openai");
+  const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [relayUrl, setRelayUrl] = useState("");
+  const [geminiApiKey, setGeminiApiKey] = useState("");
   const [status, setStatus] = useState<JobStatus>("idle");
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
@@ -21,13 +26,21 @@ function App() {
   const [meta, setMeta] = useState<MeetingMeta>({ title: "", date: "", participants: "" });
 
   useEffect(() => {
-    setApiKey(localStorage.getItem(API_KEY_STORAGE_KEY) ?? "");
+    const savedEngine = localStorage.getItem(ENGINE_STORAGE_KEY);
+    if (savedEngine === "openai" || savedEngine === "gemini") setEngine(savedEngine);
+    setOpenaiApiKey(localStorage.getItem(OPENAI_API_KEY_STORAGE_KEY) ?? "");
     setRelayUrl(localStorage.getItem(RELAY_URL_STORAGE_KEY) ?? "");
+    setGeminiApiKey(localStorage.getItem(GEMINI_API_KEY_STORAGE_KEY) ?? "");
   }, []);
 
-  const handleApiKeyChange = (key: string) => {
-    setApiKey(key);
-    localStorage.setItem(API_KEY_STORAGE_KEY, key);
+  const handleEngineChange = (next: Engine) => {
+    setEngine(next);
+    localStorage.setItem(ENGINE_STORAGE_KEY, next);
+  };
+
+  const handleOpenaiApiKeyChange = (key: string) => {
+    setOpenaiApiKey(key);
+    localStorage.setItem(OPENAI_API_KEY_STORAGE_KEY, key);
   };
 
   const handleRelayUrlChange = (url: string) => {
@@ -35,16 +48,29 @@ function App() {
     localStorage.setItem(RELAY_URL_STORAGE_KEY, url);
   };
 
+  const handleGeminiApiKeyChange = (key: string) => {
+    setGeminiApiKey(key);
+    localStorage.setItem(GEMINI_API_KEY_STORAGE_KEY, key);
+  };
+
   const handleFileSelected = async (file: File) => {
-    if (!apiKey.trim()) {
-      setStatus("error");
-      setError("請先在上方輸入 OpenAI API 金鑰。");
-      return;
-    }
-    if (!relayUrl.trim()) {
-      setStatus("error");
-      setError("請先在上方填入中繼伺服器網址（部署 worker/ 資料夾後取得，詳見 README）。");
-      return;
+    if (engine === "openai") {
+      if (!openaiApiKey.trim()) {
+        setStatus("error");
+        setError("請先在上方輸入 OpenAI API 金鑰。");
+        return;
+      }
+      if (!relayUrl.trim()) {
+        setStatus("error");
+        setError("請先在上方填入中繼伺服器網址（部署 worker/ 資料夾後取得，詳見 README）。");
+        return;
+      }
+    } else {
+      if (!geminiApiKey.trim()) {
+        setStatus("error");
+        setError("請先在上方輸入 Google Gemini API 金鑰。");
+        return;
+      }
     }
 
     setStatus("processing");
@@ -56,10 +82,15 @@ function App() {
       const chunks = await decodeAndChunkAudio(file);
       setProgress({ done: 0, total: chunks.length });
 
-      const result = await transcribeChunks(chunks, apiKey, relayUrl, (done, total, partial) => {
+      const onProgress = (done: number, total: number, partial: TranscriptSegment[]) => {
         setProgress({ done, total });
         setSegments(partial);
-      });
+      };
+
+      const result =
+        engine === "openai"
+          ? await transcribeChunks(chunks, openaiApiKey, relayUrl, onProgress)
+          : await transcribeChunksGemini(chunks, geminiApiKey, onProgress);
 
       setSegments(result);
       setStatus("done");
@@ -75,10 +106,14 @@ function App() {
       <p className="subtitle">上傳會議錄音，自動轉成帶時間戳記的繁體中文逐字稿</p>
 
       <SettingsPanel
-        apiKey={apiKey}
-        onApiKeyChange={handleApiKeyChange}
+        engine={engine}
+        onEngineChange={handleEngineChange}
+        openaiApiKey={openaiApiKey}
+        onOpenaiApiKeyChange={handleOpenaiApiKeyChange}
         relayUrl={relayUrl}
         onRelayUrlChange={handleRelayUrlChange}
+        geminiApiKey={geminiApiKey}
+        onGeminiApiKeyChange={handleGeminiApiKeyChange}
       />
       <Dropzone disabled={status === "processing"} onFileSelected={handleFileSelected} />
       <ProgressPanel status={status} progress={progress} error={error} />
