@@ -25,6 +25,7 @@ function App() {
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [stats, setStats] = useState<{ count: number; elapsedSeconds: number } | null>(null);
   const [meta, setMeta] = useState<MeetingMeta>({ title: "", date: "", participants: "" });
 
   useEffect(() => {
@@ -78,6 +79,8 @@ function App() {
     setStatus("processing");
     setError("");
     setNotice("");
+    setStats(null);
+    const startedAt = performance.now();
 
     try {
       const chunks = await decodeAndChunkAudio(file);
@@ -121,6 +124,7 @@ function App() {
       setSegments(result);
       setStatus("done");
       setNotice("");
+      setStats({ count: result.length, elapsedSeconds: Math.round((performance.now() - startedAt) / 1000) });
       clearProgress(file, engine);
     } catch (err) {
       setStatus("error");
@@ -145,7 +149,7 @@ function App() {
         onGeminiApiKeyChange={handleGeminiApiKeyChange}
       />
       <Dropzone disabled={status === "processing"} onFileSelected={handleFileSelected} />
-      <ProgressPanel status={status} progress={progress} error={error} notice={notice} />
+      <ProgressPanel status={status} progress={progress} error={error} notice={notice} stats={stats} />
       <TranscriptView segments={segments} />
       <ExportPanel segments={segments} meta={meta} onMetaChange={setMeta} />
     </main>

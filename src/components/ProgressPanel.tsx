@@ -5,9 +5,10 @@ interface Props {
   progress: { done: number; total: number };
   error: string;
   notice?: string;
+  stats?: { count: number; elapsedSeconds: number } | null;
 }
 
-export function ProgressPanel({ status, progress, error, notice }: Props) {
+export function ProgressPanel({ status, progress, error, notice, stats }: Props) {
   if (status === "idle") return null;
 
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
@@ -15,7 +16,9 @@ export function ProgressPanel({ status, progress, error, notice }: Props) {
     status === "error"
       ? "發生錯誤"
       : status === "done"
-        ? "完成！"
+        ? stats
+          ? `完成！共 ${stats.count} 句，耗時 ${stats.elapsedSeconds} 秒`
+          : "完成！"
         : progress.total > 0
           ? `處理中：第 ${progress.done}/${progress.total} 段`
           : "準備中…";
