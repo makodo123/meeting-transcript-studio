@@ -8,7 +8,7 @@ import { decodeAndChunkAudio } from "./lib/audioChunker";
 import { transcribeChunksGemini } from "./lib/geminiClient";
 import { clearProgress, loadProgress, saveProgress } from "./lib/resumeStore";
 import { transcribeChunks } from "./lib/whisperClient";
-import type { Engine, JobStatus, MeetingMeta, TranscriptSegment } from "./types";
+import type { Engine, JobStatus, MeetingMeta, ProgressUpdate, TranscriptSegment } from "./types";
 
 const ENGINE_STORAGE_KEY = "voiceToWord.engine";
 const OPENAI_API_KEY_STORAGE_KEY = "voiceToWord.openaiApiKey";
@@ -99,10 +99,15 @@ function App() {
       setSegments(initialSegments);
       setProgress({ done: startIndex, total: chunks.length });
 
-      const onProgress = (done: number, total: number, partial: TranscriptSegment[]) => {
-        setProgress({ done, total });
-        setSegments(partial);
-        saveProgress(file, engine, { totalChunks: total, doneChunks: done, segments: partial });
+      const onProgress = (update: ProgressUpdate) => {
+        setProgress({ done: update.done, total: update.total });
+        setSegments(update.segments);
+        // 存檔只用「從頭連續完成」的部分，避免併發時中斷會漏掉中間的段落
+        saveProgress(file, engine, {
+          totalChunks: update.total,
+          doneChunks: update.resumeDoneChunks,
+          segments: update.resumeSegments,
+        });
       };
       const onRetry = (chunkIndex: number, total: number, attempt: number, maxAttempts: number) => {
         setNotice(`第 ${chunkIndex}/${total} 段連線失敗，重試中（${attempt}/${maxAttempts}）…`);

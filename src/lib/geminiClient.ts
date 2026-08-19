@@ -1,7 +1,8 @@
-import type { TranscribeOptions, TranscriptSegment } from "../types";
+import type { ProgressUpdate, TranscribeOptions, TranscriptSegment } from "../types";
 import type { AudioChunk } from "./audioChunker";
+import { runChunkedTranscription } from "./chunkRunner";
 import { toTraditionalTaiwan } from "./opencc";
-import { NonRetryableError, withRetry } from "./retry";
+import { NonRetryableError } from "./retry";
 
 // Google 的 Generative Language API 支援瀏覽器直接呼叫（有開放 CORS），
 // 不像 OpenAI 那樣需要中繼伺服器。
@@ -97,25 +98,19 @@ async function transcribeChunk(blob: Blob, apiKey: string): Promise<TranscriptSe
   return parseTranscriptText(text);
 }
 
-/** 依序對每個切塊呼叫 Gemini API，並把時間戳記加上該段在原始音檔中的偏移量後回傳。*/
-export async function transcribeChunksGemini(
+/** 併發對每個切塊呼叫 Gemini API，結果依時間順序組合後回傳。*/
+export function transcribeChunksGemini(
   chunks: AudioChunk[],
   apiKey: string,
-  onProgress: (done: number, total: number, segments: TranscriptSegment[]) => void,
+  onProgress: (update: ProgressUpdate) => void,
   options: TranscribeOptions = {},
 ): Promise<TranscriptSegment[]> {
-  const startIndex = options.startIndex ?? 0;
-  const result: TranscriptSegment[] = [...(options.initialSegments ?? [])];
-
-  for (let i = startIndex; i < chunks.length; i++) {
-    const { blob, offsetSeconds } = chunks[i];
-    const segments = await withRetry(() => transcribeChunk(blob, apiKey), {
-      onRetry: (attempt, maxAttempts) => options.onRetry?.(i + 1, chunks.length, attempt, maxAttempts),
-    });
-    for (const seg of segments) {
-      result.push({ start: seg.start + offsetSeconds, end: seg.end + offsetSeconds, text: seg.text });
-    }
-    onProgress(i + 1, chunks.length, [...result]);
-  }
-  return result;
+  return runChunkedTranscription(chunks, options, onProgress, async (chunk) => {
+    const segments = await transcribeChunk(chunk.blob, apiKey);
+    return segments.map((seg) => ({
+      start: seg.start + chunk.offsetSeconds,
+      end: seg.end + chunk.offsetSeconds,
+      text: seg.text,
+    }));
+  });
 }

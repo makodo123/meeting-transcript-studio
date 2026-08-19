@@ -1,7 +1,8 @@
-import type { TranscribeOptions, TranscriptSegment } from "../types";
+import type { ProgressUpdate, TranscribeOptions, TranscriptSegment } from "../types";
 import type { AudioChunk } from "./audioChunker";
+import { runChunkedTranscription } from "./chunkRunner";
 import { toTraditionalTaiwan } from "./opencc";
-import { NonRetryableError, withRetry } from "./retry";
+import { NonRetryableError } from "./retry";
 
 interface WhisperVerboseSegment {
   start: number;
@@ -27,11 +28,35 @@ function isLikelyHallucinatedSilence(seg: WhisperVerboseSegment): boolean {
   return noSpeechProb > NO_SPEECH_PROB_THRESHOLD && avgLogprob < AVG_LOGPROB_THRESHOLD;
 }
 
+/**
+ * 保險機制：即使 no_speech_prob 沒抓到，同一句話連續出現 3 次以上
+ * 也視為幻覺迴圈，只保留前兩次、之後全部略過。
+ *
+ * 因為切塊是併發處理的，這個「跨片段」的判斷必須等結果依序組合好之後再做。
+ */
+function dropRepeatedHallucinations(segments: TranscriptSegment[]): TranscriptSegment[] {
+  const out: TranscriptSegment[] = [];
+  let repeatText = "";
+  let repeatCount = 0;
+
+  for (const seg of segments) {
+    if (seg.text === repeatText) {
+      repeatCount++;
+      if (repeatCount >= 2) continue;
+    } else {
+      repeatText = seg.text;
+      repeatCount = 0;
+    }
+    out.push(seg);
+  }
+  return out;
+}
+
 // OpenAI 的 API 沒有開放瀏覽器直接呼叫（沒有 CORS 標頭），所以要透過一個小型中繼伺服器
 // （見 worker/index.js，部署成 Cloudflare Worker）轉發請求。relayUrl 就是那個 Worker 的網址。
-async function transcribeChunk(blob: Blob, apiKey: string, relayUrl: string): Promise<WhisperVerboseSegment[]> {
+async function transcribeChunk(chunk: AudioChunk, apiKey: string, relayUrl: string): Promise<TranscriptSegment[]> {
   const formData = new FormData();
-  formData.append("file", blob, "audio.wav");
+  formData.append("file", chunk.blob, "audio.wav");
   formData.append("model", "whisper-1");
   formData.append("response_format", "verbose_json");
   formData.append("language", "zh");
@@ -65,46 +90,33 @@ async function transcribeChunk(blob: Blob, apiKey: string, relayUrl: string): Pr
   }
 
   const data: WhisperVerboseResponse = await res.json();
-  return data.segments ?? [];
+  const out: TranscriptSegment[] = [];
+  for (const seg of data.segments ?? []) {
+    if (isLikelyHallucinatedSilence(seg)) continue;
+    const text = toTraditionalTaiwan(seg.text.trim());
+    if (!text) continue;
+    out.push({
+      start: chunk.offsetSeconds + seg.start,
+      end: chunk.offsetSeconds + seg.end,
+      text,
+    });
+  }
+  return out;
 }
 
-/** 依序對每個切塊呼叫 Whisper API（經由中繼伺服器），並把時間戳記加上該段在原始音檔中的偏移量後回傳。*/
-export async function transcribeChunks(
+/** 併發對每個切塊呼叫 Whisper API（經由中繼伺服器），結果依時間順序組合後回傳。*/
+export function transcribeChunks(
   chunks: AudioChunk[],
   apiKey: string,
   relayUrl: string,
-  onProgress: (done: number, total: number, segments: TranscriptSegment[]) => void,
+  onProgress: (update: ProgressUpdate) => void,
   options: TranscribeOptions = {},
 ): Promise<TranscriptSegment[]> {
-  const startIndex = options.startIndex ?? 0;
-  const result: TranscriptSegment[] = [...(options.initialSegments ?? [])];
-  let repeatText = "";
-  let repeatCount = 0;
-
-  for (let i = startIndex; i < chunks.length; i++) {
-    const { blob, offsetSeconds } = chunks[i];
-    const segments = await withRetry(() => transcribeChunk(blob, apiKey, relayUrl), {
-      onRetry: (attempt, maxAttempts) => options.onRetry?.(i + 1, chunks.length, attempt, maxAttempts),
-    });
-    for (const seg of segments) {
-      if (isLikelyHallucinatedSilence(seg)) continue;
-
-      const text = toTraditionalTaiwan(seg.text.trim());
-      if (!text) continue;
-
-      // 保險機制：即使 no_speech_prob 沒抓到，同一句話連續出現 3 次以上
-      // 也視為幻覺迴圈，只保留前兩次、之後全部略過。
-      if (text === repeatText) {
-        repeatCount++;
-        if (repeatCount >= 2) continue;
-      } else {
-        repeatText = text;
-        repeatCount = 0;
-      }
-
-      result.push({ start: offsetSeconds + seg.start, end: offsetSeconds + seg.end, text });
-    }
-    onProgress(i + 1, chunks.length, [...result]);
-  }
-  return result;
+  return runChunkedTranscription(
+    chunks,
+    options,
+    onProgress,
+    (chunk) => transcribeChunk(chunk, apiKey, relayUrl),
+    dropRepeatedHallucinations,
+  );
 }
